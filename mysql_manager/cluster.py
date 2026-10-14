@@ -86,7 +86,13 @@ class ClusterManager:
         while self.cluster_data_handler.get_cluster_state() == MysqlClusterState.STANDBY.value:
             self._log(f"Cluster is in standby mode. Remote server: {self.remote.host}")
             if self.must_replica_join_source(self.src, self.remote):
-                self.join_source_to_remote(retry=1000)
+                try:
+                    self.join_source_to_remote(retry=1000)
+                except Exception as e:
+                    self._log(
+                        f"ERROR: {e} — Manual intervention required. Waiting before retry..."
+                    )
+                    time.sleep(CLUSTER_CHECK_INTERVAL_SECONDS)
             time.sleep(CLUSTER_CHECK_INTERVAL_SECONDS)
 
         if self.remote is not None: 
@@ -281,8 +287,15 @@ class ClusterManager:
     def join_source_to_remote(self, retry: int=1):
         ## TODO: check remote server id
         self._log("Joining source to remote")
-        
-        # TODO: if self.src is in replicating_remote state do not clone remote
+
+        if self.cluster_data_handler.is_remote_cloned():
+            self._log(
+                "Remote database was already cloned. Skipping clone. "
+                "Attempting replication setup..."
+            )
+            self.start_mysql_replication_from_remote()
+            return
+
         self.src.status = MysqlStatus.CLONING_REMOTE.value
         if self.repl is not None:
             self.repl.status = MysqlStatus.UP.value
@@ -323,6 +336,7 @@ class ClusterManager:
 
         self.src.status = MysqlStatus.REPLICATING_REMOTE.value
         self._write_cluster_state()
+        self.cluster_data_handler.set_remote_cloned(True)
         
         if self.src.user_exists(src_main_user):
             self.src.change_user_password(src_main_user, src_main_password)
@@ -331,7 +345,13 @@ class ClusterManager:
 
         self.src.password = src_main_password
         self.src.user = src_main_user
-        self.start_mysql_replication_from_remote()
+        while True:
+            try:
+                self.start_mysql_replication_from_remote()
+                break
+            except Exception as e:
+                self._log(f"Failed to start replication from remote: {e}. Retrying...")
+                time.sleep(CLUSTER_CHECK_INTERVAL_SECONDS)
 
     def join_replica_to_source(self, retry: int=1):
         self._log("Joining replica to source")

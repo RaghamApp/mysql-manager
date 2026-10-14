@@ -96,6 +96,15 @@ class ClusterDataHandler:
         cluster_data = self.get_cluster_data()
         return cluster_data.fail_interval
 
+    def is_remote_cloned(self) -> bool:
+        cluster_data = self.get_cluster_data()
+        return cluster_data.remote_cloned
+
+    def set_remote_cloned(self, value: bool = True) -> None:
+        cluster_data = self.get_cluster_data()
+        cluster_data.remote_cloned = value
+        self.write_cluster_data(cluster_data)
+
     def get_cluster_data(self) -> ClusterData:
         ## TODO: handle null value of cluster
         cluster_data_dict = self.etcd_client.read_cluster_data()
@@ -111,7 +120,8 @@ class ClusterDataHandler:
             users=cluster_data_dict["users"],
             status=ClusterStatus(state=cluster_data_dict["status"]["state"]),
             remote=remote,
-            fail_interval=cluster_data_dict.get("fail_interval", MINIMUM_FAIL_INTERVAL)
+            fail_interval=cluster_data_dict.get("fail_interval", MINIMUM_FAIL_INTERVAL),
+            remote_cloned=cluster_data_dict.get("remote_cloned", False),
         )
 
         return cluster_data
