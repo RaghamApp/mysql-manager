@@ -432,6 +432,7 @@ CHANGE REPLICATION SOURCE TO SOURCE_HOST='{self.source.host}',
         with db: 
             with db.cursor() as cursor:
                 try: 
+                    cursor.execute("STOP REPLICA")
                     cursor.execute(
                         self._generate_change_master_command(repl_user, repl_password)
                     )

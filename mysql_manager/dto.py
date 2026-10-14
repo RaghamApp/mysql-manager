@@ -25,6 +25,7 @@ class ClusterData:
     status: ClusterStatus
     users: dict[str: str]
     fail_interval: int
+    remote_cloned: bool = False
 
 @dataclass
 class MysqlPlugin:
