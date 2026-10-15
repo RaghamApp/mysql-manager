@@ -51,6 +51,28 @@ replica=up
 ```
 
 
+## monitor-only mode
+To run MySQL Manager only as a health checker, start it with the `--monitor-only` flag or set
+the `MM_MONITOR_ONLY=true` environment variable:
+```sh
+python cli/mysql-cli.py mysql run --monitor-only
+## or
+MM_MONITOR_ONLY=true python cli/mysql-cli.py mysql run
+```
+In this mode MySQL Manager keeps checking the cluster and reports problems in its logs and metrics,
+but it never changes the MySQL servers or the cluster data in etcd: it does not clone, fail over,
+restart or reset replication, nor run the initial setup. Every action it would have taken is logged
+with a `[monitor-only] Skipping <action>: <reason>` line and counted in the
+`mysql_manager_skipped_actions_total{action="<action>"}` metric.
+
+Metrics (served on port 8000):
+- `mysql_manager_monitor_only_mode`: 1 when running in monitor-only mode
+- `mysql_master_up`, `mysql_replica_up`: whether the source and replica are up
+- `mysql_master_health_check_failures`: consecutive failed health checks of the source
+- `mysql_replication_problem{host, problem}`: replication problems currently detected on the replica
+- `mysql_manager_skipped_actions_total{action}`: actions skipped because of monitor-only mode
+
+
 ## destroy
 to destroy the containers run:
 ```sh

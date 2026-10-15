@@ -132,13 +132,19 @@ def signal_handler(signum, frame):
 
 
 @mysql.command()
-def run():
+@click.option(
+    '--monitor-only',
+    is_flag=True,
+    envvar='MM_MONITOR_ONLY',
+    help='Only check the cluster and report problems in logs and metrics, never change mysql servers or etcd. Can also be set with MM_MONITOR_ONLY=true',
+)
+def run(monitor_only: bool):
     signal.signal(signal.SIGTERM, signal_handler)
     signal.signal(signal.SIGINT, signal_handler)
     # create_config_file_from_env(nodes_count=nodes)
-    print("Starting cluster manager...")
+    print("Starting cluster manager in monitor-only mode..." if monitor_only else "Starting cluster manager...")
     try:
-        clm = ClusterManager()
+        clm = ClusterManager(monitor_only=monitor_only)
         clm.run()
     except ProgramKilled:
         print("Received termination signal. Exiting...")

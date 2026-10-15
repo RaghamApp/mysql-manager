@@ -27,10 +27,17 @@ from mysql_manager.metrics import (
     CLUSTER_FAILURES,
     MASTER_UP_STATUS,
     REPLICA_UP_STATUS,
+    REPLICATION_PROBLEM,
+    MASTER_HEALTH_CHECK_FAILURES,
+    MONITOR_ONLY_MODE,
+    SKIPPED_ACTIONS,
 )
 
-class ClusterManager: 
-    def __init__(self, config_file: str=DEFAULT_CONFIG_PATH):
+class ClusterManager:
+    def __init__(self, config_file: str=DEFAULT_CONFIG_PATH, monitor_only: bool=False):
+        # in monitor-only mode the manager only checks the cluster and reports problems
+        # in logs and metrics. it never writes to mysql servers nor to etcd
+        self.monitor_only = monitor_only
         self.src: Mysql | None = None
         self.repl: Mysql | None = None
         # self.proxysqls: list[ProxySQL] = [] 
@@ -43,6 +50,7 @@ class ClusterManager:
 
         # Start Prometheus metrics server on port 8000
         start_http_server(8000)
+        MONITOR_ONLY_MODE.set(1 if monitor_only else 0)
 
     @property
     def master_failure_threshold(self) -> int:
@@ -50,6 +58,14 @@ class ClusterManager:
 
     def _log(self, msg) -> None:
         print(str(datetime.datetime.now()) + "  " + msg)
+
+    def _can_change_cluster(self, action: str, reason: str) -> bool:
+        if not self.monitor_only:
+            return True
+
+        self._log(f"[monitor-only] Skipping {action}: {reason}")
+        SKIPPED_ACTIONS.labels(action=action).inc()
+        return False
 
     def _validate_cluster_spec(self, spec: dict):
         if len(spec["mysqls"]) == 0: 
@@ -76,7 +92,13 @@ class ClusterManager:
             self.remote = Mysql(name=REMOTE_SOURCE_NAME, **asdict(remote_dto))
         
     def run(self):
-        while not self.cluster_data_handler.is_cluster_data_available(): 
+        if self.monitor_only:
+            self._log(
+                "Mysql manager is running in MONITOR-ONLY mode: it only checks the cluster and "
+                "reports problems in logs and metrics. No change will be made to mysql servers or etcd"
+            )
+
+        while not self.cluster_data_handler.is_cluster_data_available():
             time.sleep(CLUSTER_CHECK_INTERVAL_SECONDS)
             self._log("Cluster data not available. Waiting for it...")
 
@@ -85,11 +107,18 @@ class ClusterManager:
         ## here we assume the remote server is always up because we don't have control over it
         while self.cluster_data_handler.get_cluster_state() == MysqlClusterState.STANDBY.value:
             self._log(f"Cluster is in standby mode. Remote server: {self.remote.host}")
-            if self.must_replica_join_source(self.src, self.remote):
+            if self.must_replica_join_source(self.src, self.remote) and self._can_change_cluster(
+                "join_source_to_remote",
+                f"source {self.src.host} is not replicating from remote {self.remote.host}, "
+                "it would be wiped and cloned from remote",
+            ):
                 self.join_source_to_remote(retry=1000)
             time.sleep(CLUSTER_CHECK_INTERVAL_SECONDS)
 
-        if self.remote is not None: 
+        if self.remote is not None and self._can_change_cluster(
+            "reset_source_replication",
+            f"replication of source {self.src.host} from remote would be reset",
+        ):
             self.src.reset_replication()
 
         self.start()
@@ -120,15 +149,23 @@ class ClusterManager:
         # self._log(str(self.cluster_status))
         self._set_status_metrics()
 
-        if self.repl is not None:  
-            if self.must_replica_join_source(self.repl, self.src): 
+        if self.repl is not None:
+            if self.must_replica_join_source(self.repl, self.src) and self._can_change_cluster(
+                "join_replica_to_source",
+                f"replica {self.repl.host} is not replicating from source {self.src.host}, "
+                "it would be wiped and cloned from source",
+            ):
                 self.join_replica_to_source(retry=10)
             if (
                 self.repl.status == MysqlStatus.REPLICATION_THREADS_STOPPED.value
                 and self.src.status == MysqlStatus.UP.value
             ):
-                self.repl.restart_replication()
-                REPLICATION_RESTARTS.inc()
+                if self._can_change_cluster(
+                    "restart_replication",
+                    f"replication threads of replica {self.repl.host} are stopped",
+                ):
+                    self.repl.restart_replication()
+                    REPLICATION_RESTARTS.inc()
             elif (
                 self.src.status == MysqlStatus.DOWN.value
                 and self.repl.status == MysqlStatus.DOWN.value
@@ -140,6 +177,11 @@ class ClusterManager:
                 # a long time, if it is behind master for a long time
                 self.src.health_check_failures > self.master_failure_threshold
                 and self.repl.status != MysqlStatus.DOWN.value
+                and self._can_change_cluster(
+                    "failover",
+                    f"source {self.src.host} failed {self.src.health_check_failures} health checks "
+                    f"(threshold: {self.master_failure_threshold}), replica {self.repl.host} would be promoted",
+                )
             ):
                 self._log("Running failover for cluster")
                 FAILOVER_ATTEMPTS.inc()
@@ -161,11 +203,21 @@ class ClusterManager:
             1 if self.src.status == MysqlStatus.UP.value else 0
         )
 
-        if self.repl is not None: 
+        MASTER_HEALTH_CHECK_FAILURES.clear()
+        MASTER_HEALTH_CHECK_FAILURES.labels(host=self.src.host).set(self.src.health_check_failures)
+
+        if self.repl is not None:
             REPLICA_UP_STATUS.clear()
             REPLICA_UP_STATUS.labels(host=self.repl.host).set(
                 1 if self.repl.status == MysqlStatus.UP.value else 0
             )
+
+    def _report_replication_problems(self, problems: list[str]):
+        REPLICATION_PROBLEM.clear()
+        for problem in problems:
+            REPLICATION_PROBLEM.labels(host=self.repl.host, problem=problem).set(1)
+        if problems:
+            self._log(f"Replication problems detected on replica {self.repl.host}: {problems}")
 
     def switch_src_and_repl(self): 
         self._log(f"Switching src[{self.src.host}] and repl[{self.repl.host}]")
@@ -203,7 +255,8 @@ class ClusterManager:
             if self.is_server_up(self.repl, retry=1):
                 self.repl.status = MysqlStatus.UP.value 
                 problems = self.repl.find_replication_problems()
-                if MysqlReplicationProblem.NOT_REPLICA.value in problems: 
+                self._report_replication_problems(problems)
+                if MysqlReplicationProblem.NOT_REPLICA.value in problems:
                     self.repl.status = MysqlStatus.NOT_REPLICA.value
                     return
                 if ( 
@@ -211,9 +264,10 @@ class ClusterManager:
                     or MysqlReplicationProblem.IO_THREAD_NOT_RUNNING.value in problems
                 ):
                     self.repl.status = MysqlStatus.REPLICATION_THREADS_STOPPED.value
-            else: 
+            else:
                 self.repl.status = MysqlStatus.DOWN.value
-        
+                self._report_replication_problems([])
+
         self._write_cluster_state()
 
     def _write_cluster_state(self):
@@ -364,7 +418,10 @@ class ClusterManager:
         self.check_servers_up(retry=10)
 
         self._log("Initializing config of servers...")
-        if self.cluster_data_handler.get_cluster_state() == MysqlClusterState.NEW.value:
+        if self.cluster_data_handler.get_cluster_state() == MysqlClusterState.NEW.value and self._can_change_cluster(
+            "initial_setup",
+            f"cluster is new, source {self.src.host} would be configured and cluster state would be set to created",
+        ):
             self.config_src_initial_setup()
             ## TODO: what if we restart before writing cluster data?
             self.cluster_data_handler.update_cluster_state(MysqlClusterState.CREATED.value)

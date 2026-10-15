@@ -61,6 +61,7 @@ def mocked_cluster():
     mgr.cluster_data_handler = MagicMock()
     mgr.etcd_client = MagicMock()
     mgr.fail_interval = 15
+    mgr.monitor_only = False
     mgr.src = MockedMysql("s1", role="source")
     mgr.repl = MockedMysql("s2", role="replica")
     mgr.remote = None
