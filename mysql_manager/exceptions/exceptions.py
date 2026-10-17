@@ -50,3 +50,10 @@ class FailIntervalLessThanMinimumError(Exception):
         super().__init__(
             f"Variable fail_interval could not be less than {MINIMUM_FAIL_INTERVAL}"
         )
+
+class RemoteAlreadyClonedError(Exception):
+    def __init__(self) -> None:
+        super().__init__(
+            "Remote database was already cloned but replication setup failed. "
+            "Manual intervention required."
+        )
