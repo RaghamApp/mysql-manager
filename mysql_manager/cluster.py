@@ -107,7 +107,16 @@ class ClusterManager:
         if not self.is_server_up(repl):
             return False
 
-        repl_status = repl.get_replica_status()
+        # joining clones the source into the replica, which wipes the replica's data,
+        # so only join when the replica actually answered that it is not replicating
+        # from src. if the status can not be read (e.g. a transient DNS failure right
+        # after the ping above), skip this cycle and check again in the next one
+        try:
+            repl_status = repl.get_replica_status_strict()
+        except Exception as e:
+            self._log(f"Could not read replica status of {repl.host}, not joining it to source in this cycle: {e}")
+            return False
+
         if repl_status is not None and repl_status.get("Source_Host") ==  src.host:
             return False
 
