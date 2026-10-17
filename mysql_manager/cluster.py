@@ -87,17 +87,21 @@ class ClusterManager:
         while self.cluster_data_handler.get_cluster_state() == MysqlClusterState.STANDBY.value:
             self._log(f"Cluster is in standby mode. Remote server: {self.remote.host}")
             if self.must_replica_join_source(self.src, self.remote):
-                try:
-                    self.join_source_to_remote(retry=1000)
-                except Exception as e:
-                    self._log(
-                        f"ERROR: {e} — Manual intervention required. Waiting before retry..."
-                    )
-                    time.sleep(CLUSTER_CHECK_INTERVAL_SECONDS)
+                # HOTFIX: clone from remote disabled
+                self._log("HOTFIX: join_source_to_remote (clone from remote) is ignored")
+                # try:
+                #     self.join_source_to_remote(retry=1000)
+                # except Exception as e:
+                #     self._log(
+                #         f"ERROR: {e} — Manual intervention required. Waiting before retry..."
+                #     )
+                #     time.sleep(CLUSTER_CHECK_INTERVAL_SECONDS)
             time.sleep(CLUSTER_CHECK_INTERVAL_SECONDS)
 
-        if self.remote is not None: 
-            self.src.reset_replication()
+        if self.remote is not None:
+            # HOTFIX: resetting replication on source disabled
+            self._log("HOTFIX: src.reset_replication() is ignored")
+            # self.src.reset_replication()
 
         self.start()
         while True: 
@@ -128,8 +132,10 @@ class ClusterManager:
         self._set_status_metrics()
 
         if self.repl is not None:  
-            if self.must_replica_join_source(self.repl, self.src): 
-                self.join_replica_to_source(retry=10)
+            if self.must_replica_join_source(self.repl, self.src):
+                # HOTFIX: replica re-clone disabled (false negatives reset a healthy replica)
+                self._log(f"HOTFIX: join_replica_to_source (re-clone of {self.repl.host}) is ignored")
+                # self.join_replica_to_source(retry=10)
             if (
                 self.repl.status == MysqlStatus.REPLICATION_THREADS_STOPPED.value
                 and self.src.status == MysqlStatus.UP.value
@@ -148,15 +154,17 @@ class ClusterManager:
                 self.src.health_check_failures > self.master_failure_threshold
                 and self.repl.status != MysqlStatus.DOWN.value
             ):
-                self._log("Running failover for cluster")
-                FAILOVER_ATTEMPTS.inc()
-                ## TODO: what if we restart when running this 
-                ## TODO: use etcd txn
-                self.cluster_data_handler.set_mysql_role(self.src.name, MysqlRoles.REPLICA.value)
-                self.cluster_data_handler.set_mysql_role(self.repl.name, MysqlRoles.SOURCE.value)
-                ## TODO: let all relay logs to be applied before resetting replication
-                self.repl.reset_replication()
-                self.switch_src_and_repl()
+                # HOTFIX: auto failover disabled
+                self._log("HOTFIX: failover is ignored (source health check failures exceeded threshold)")
+                # self._log("Running failover for cluster")
+                # FAILOVER_ATTEMPTS.inc()
+                # ## TODO: what if we restart when running this
+                # ## TODO: use etcd txn
+                # self.cluster_data_handler.set_mysql_role(self.src.name, MysqlRoles.REPLICA.value)
+                # self.cluster_data_handler.set_mysql_role(self.repl.name, MysqlRoles.SOURCE.value)
+                # ## TODO: let all relay logs to be applied before resetting replication
+                # self.repl.reset_replication()
+                # self.switch_src_and_repl()
 
         self._log(f"Source is {self.src.host}")
         if self.repl is not None: 
@@ -286,6 +294,9 @@ class ClusterManager:
         self.src.create_nonpriv_user(self.users["nonprivUser"], self.users["nonprivPassword"])
 
     def join_source_to_remote(self, retry: int=1):
+        # HOTFIX: guard in case anything else calls this
+        self._log("HOTFIX: join_source_to_remote is ignored")
+        return
         ## TODO: check remote server id
         self._log("Joining source to remote")
 
@@ -355,6 +366,9 @@ class ClusterManager:
                 time.sleep(CLUSTER_CHECK_INTERVAL_SECONDS)
 
     def join_replica_to_source(self, retry: int=1):
+        # HOTFIX: guard in case anything else calls this
+        self._log("HOTFIX: join_replica_to_source is ignored")
+        return
         self._log("Joining replica to source")
         # TODO: do not clone if the gtids are in sync
         self.src.install_plugin("clone", "mysql_clone.so")
