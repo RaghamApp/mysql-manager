@@ -211,6 +211,12 @@ select @@global.log_bin, @@global.binlog_format, @@global.gtid_mode, @@global.en
         except: 
             return None        
 
+    def get_replica_status_strict(self) -> dict | None:
+        ## unlike get_replica_status, None here only means the server answered and
+        ## is not a replica. connection and query errors are raised, so a transient
+        ## failure (e.g. DNS) is never mistaken for a server that must be re-cloned
+        return self.run_command("SHOW REPLICA STATUS")
+
     def is_replica(self) -> bool: 
         ## TODO: what if replica is not available?
         return self.get_replica_status() is not None 
